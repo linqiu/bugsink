@@ -98,6 +98,19 @@ if os.getenv("DATABASE_URL"):
     else:
         raise ValueError("For DATABASE_URL, only mysql and postgres are supported, not '%s'" % parsed.scheme)
 
+    # For network databases (MySQL/PostgreSQL), keeping connections alive between requests avoids the overhead of
+    # reconnecting on every request (which can be significant when the DB is on a separate host, e.g. Azure MySQL).
+    # The default CONN_MAX_AGE=0 was chosen for sqlite (to prevent WAL checkpoint starvation) but that concern
+    # doesn't apply to MySQL/PostgreSQL. 600 seconds = 10 minutes.
+    # NOTE: When using PgBouncer, set CONN_MAX_AGE=0 so PgBouncer manages the pool (not Django).
+    CONN_MAX_AGE = int(os.getenv("CONN_MAX_AGE", 600))
+
+    if parsed.scheme in ["postgres", "postgresql"]:
+        # Disable server-side cursors for PostgreSQL. Required when using PgBouncer in transaction pool mode
+        # (server-side cursors span multiple transactions, which breaks transaction pooling). Harmless when
+        # connecting directly — Bugsink doesn't use .iterator() so this has no performance impact.
+        DATABASES['default']['DISABLE_SERVER_SIDE_CURSORS'] = True
+
 else:
     # similar to the default, but the fallback is /data/db.sqlite3; we also create the directory if it doesn't exist,
     # which allows for throwaway setups (no volume mounted) to work out of the box.
