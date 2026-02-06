@@ -161,18 +161,16 @@ class ImmediateAtomic(SuperDurableAtomic):
 
         super(ImmediateAtomic, self).__enter__()
 
-        if connection.vendor != 'sqlite':
-            # we just do a "select the first row" query on the ContentType table to make sure we have a global write
-            # lock (for sqlite, this is not necessary, because BEGIN IMMEDIATE already does that). (We prefer
-            # ContentType over User because of the whole users.get_user_model() thing.) `.first()` is needed to make the
-            # qs actually evaluate (become non-lazy).
-            #
-            # Note: for a moment I considered pushing the select_for_update closer to the location where it matters
-            # most, i.e. ingest, and also to tie it more closely to e.g. the project at hand. As it stands, I actually
-            # like very much that we stick closely to the sqlite model for the mysql case, but we can always take this
-            # road later.
-            from django.contrib.contenttypes.models import ContentType
-            ContentType.objects.using(self.using).select_for_update().order_by("pk").first()
+        # For non-sqlite databases, we previously acquired a global write lock here via
+        # ContentType.objects.select_for_update(). This serialized ALL write transactions globally, which becomes a
+        # severe bottleneck under load (only one event digested at a time across all projects).
+        #
+        # The lock has been pushed to the specific call sites that need it, most importantly digest_event, where we
+        # now lock on the Project row (via select_for_update) instead of a global lock. This allows concurrent
+        # digestion of events for different projects while still serializing events within the same project.
+        #
+        # For sqlite, BEGIN IMMEDIATE already provides the necessary serialization (sqlite is single-writer by
+        # nature), so no change is needed there.
 
         self.t0 = time.time()
 

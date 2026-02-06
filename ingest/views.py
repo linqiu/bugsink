@@ -302,9 +302,10 @@ class BaseIngestAPIView(View):
     @immediate_atomic()
     def digest_event(cls, event_metadata, event_data, digested_at=None, minidump_bytes=None):
         # ingested_at is passed from the point-of-ingestion; digested_at is determined here. Because this happens inside
-        # `immediate_atomic`, we know digestions are serialized, and assuming non-decreasing server clocks, not decrea-
-        # sing. (no so for ingestion times: clock-watching happens outside the snappe transaction, and threading in the
-        # foreman is another source of shuffling).
+        # `immediate_atomic` with a per-project lock (select_for_update on Project for PostgreSQL/MySQL, or BEGIN
+        # IMMEDIATE for sqlite), we know digestions are serialized per-project, and assuming non-decreasing server
+        # clocks, not decreasing. (no so for ingestion times: clock-watching happens outside the snappe transaction,
+        # and threading in the foreman is another source of shuffling).
         #
         # Because of this property we use digested_at for eviction and quota, and, because quota is a VBC-based and so
         # is unmuting, in all ummuting-related checks. This saves us from having to precisely reason about edge-cases
@@ -318,13 +319,20 @@ class BaseIngestAPIView(View):
         digested_at = datetime.now(timezone.utc) if digested_at is None else digested_at  # explicit passing: test only
 
         try:
-            project = Project.objects.get(pk=event_metadata["project_id"], is_deleted=False)
+            # select_for_update() provides per-project serialization on PostgreSQL/MySQL: events for the same project
+            # are digested one at a time (required for correct grouping, digest_order, eviction, and counters) while
+            # events for different projects can be digested concurrently. On sqlite this is a no-op because BEGIN
+            # IMMEDIATE already provides the necessary serialization.
+            project = Project.objects.select_for_update().get(pk=event_metadata["project_id"], is_deleted=False)
         except Project.DoesNotExist:
             # we may get here if the project was deleted after the event was ingested, but before it was digested
             # (covers both "deletion in progress (is_deleted=True)" and "fully deleted").
             return
 
-        installation = Installation.objects.get()
+        # select_for_update() on Installation serializes the (rare, amortized) installation-wide quota updates.
+        # Because installation quota checks only write when next_quota_check is reached, actual lock contention is
+        # minimal — most events just read the cached quota_exceeded_until and move on.
+        installation = Installation.objects.select_for_update().get()
         if (not cls.count_installation_periods_and_act_on_it(installation, digested_at)
                 or not cls.count_project_periods_and_act_on_it(project, digested_at)):
 
