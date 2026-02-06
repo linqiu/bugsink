@@ -1,22 +1,10 @@
-# This is the Dockerfile that builds an image form the current directory.
-# It is provided as-is; the Bugsink team does not use this in their own
-# development. Tips:
-
-# * Configure your database/filestore/etc _outside_ of the current path
-#     to avoid copying them into the image.
+# PostgreSQL-only Dockerfile for Bugsink (MySQL support removed).
+#
+# Configure your database/filestore/etc _outside_ of the current path
+# to avoid copying them into the image.
 
 ARG PYTHON_VERSION=3.12
 
-# Build image: non-slim, in particular to build the mysqlclient wheel
-FROM python:${PYTHON_VERSION} AS build
-
-# mysqlclient is not available as a .whl on PyPI, so we need to build it from
-# source and store the .whl. This is both the most expensive part of the build
-# and the one that is least likely to change, so we do it first.
-RUN --mount=type=cache,target=/var/cache/buildkit/pip \
-    pip wheel --wheel-dir /wheels mysqlclient
-
-# Actual image (based on slim)
 FROM python:${PYTHON_VERSION}-slim
 
 ENV PYTHONUNBUFFERED=1
@@ -24,14 +12,6 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 
 WORKDIR /app
-
-# mysqlclient dependencies; needed here too, because the built wheel depends on .o files
-RUN apt update && apt install default-libmysqlclient-dev -y
-
-COPY --from=build /wheels /wheels
-
-RUN --mount=type=cache,target=/var/cache/buildkit/pip \
-    pip install --find-links /wheels --no-index mysqlclient
 
 RUN --mount=type=cache,target=/var/cache/buildkit/pip \
     pip install "psycopg[binary]"
